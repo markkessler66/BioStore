@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BioStore — PhyNetPy data hub</title>
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem("biostore-theme");
+        document.documentElement.setAttribute("data-theme", t === "light" ? "light" : "dark");
+      } catch (e) {
+        document.documentElement.setAttribute("data-theme", "dark");
+      }
+    })();
+  </script>
+  <link rel="stylesheet" href="css/style.css" />
+  <script src="vendor/d3.v7.min.js" defer></script>
+</head>
+<body>
+  <div id="login-screen" class="login-screen hidden">
+    <form id="login-form" class="login-card" autocomplete="on">
+      <div class="login-brand">
+        <span class="logo">BioStore</span>
+        <span class="tagline">PhyNetPy Data Hub</span>
+      </div>
+      <p class="login-blurb">Sign in with the lab password and your display name so others can see who has a file open.</p>
+      <label class="login-label" for="login-name">Display name</label>
+      <input id="login-name" name="display_name" type="text" maxlength="64" placeholder="e.g. Marky" required />
+      <label class="login-label" for="login-password">Lab password</label>
+      <input id="login-password" name="password" type="password" placeholder="Shared lab password" />
+      <p id="login-error" class="login-error hidden"></p>
+      <button type="submit" class="primary login-submit">Enter BioStore</button>
+      <p id="login-hint" class="login-hint"></p>
+    </form>
+  </div>
+
+  <div id="app-shell" class="app-shell hidden">
+    <header class="toolbar">
+      <button id="btn-sidebar-toggle" class="icon-btn" type="button" title="Show or hide the sidebar" aria-label="Show or hide the sidebar"></button>
+      <div class="brand">
+        <span class="logo">BioStore</span>
+        <span class="tagline">PhyNetPy Data Hub</span>
+      </div>
+      <div class="search">
+        <span class="search-icon" aria-hidden="true"></span>
+        <input id="search-input" type="search" placeholder="Search files" aria-label="Search files" />
+        <div id="search-results" class="search-results hidden" role="listbox"></div>
+      </div>
+      <div class="toolbar-actions">
+        <button id="btn-new-file" class="btn toolbar-primary" type="button">New</button>
+        <button id="btn-upload" class="btn primary toolbar-primary" type="button">Upload</button>
+        <button id="btn-overflow" class="icon-btn" type="button" title="More actions" aria-label="More actions" aria-haspopup="menu" aria-expanded="false"></button>
+        <div id="overflow-menu" class="menu hidden" role="menu">
+          <button type="button" class="menu-item" data-action="new-file" role="menuitem">New file</button>
+          <button type="button" class="menu-item" data-action="new-folder" role="menuitem">New folder</button>
+          <button type="button" class="menu-item" data-action="upload" role="menuitem">Upload files</button>
+          <button type="button" class="menu-item" data-action="upload-folder" role="menuitem">Upload folder</button>
+          <div class="menu-sep"></div>
+          <button type="button" class="menu-item" data-action="jobs" role="menuitem">Jobs</button>
+          <button type="button" class="menu-item" data-action="analysis" role="menuitem">Run analysis</button>
+          <button type="button" class="menu-item" data-action="stats" role="menuitem">Storage stats</button>
+          <button type="button" class="menu-item" data-action="inspector" role="menuitem">Toggle inspector</button>
+          <button type="button" class="menu-item" id="btn-theme" data-action="theme" role="menuitem">Use light theme</button>
+          <div class="menu-sep"></div>
+          <button type="button" class="menu-item" data-action="logout" role="menuitem">Log out</button>
+        </div>
+      </div>
+      <input id="file-input" type="file" multiple hidden />
+      <input id="folder-input" type="file" webkitdirectory multiple hidden />
+    </header>
+
+    <div class="shell-body">
+      <aside class="sidebar" id="sidebar">
+        <nav class="side-nav" aria-label="Sections">
+          <button type="button" class="nav-item active" data-nav="library" id="nav-library">Library</button>
+          <button type="button" class="nav-item" data-nav="jobs" id="nav-jobs">Jobs</button>
+          <button type="button" class="nav-item" data-nav="analyses" id="nav-analyses">Analyses</button>
+        </nav>
+        <div class="sidebar-header">
+          <span>Files</span>
+          <button id="btn-refresh" class="icon-btn" type="button" title="Refresh" aria-label="Refresh files"></button>
+        </div>
+        <div id="tree" class="tree"></div>
+        <div class="sidebar-footer">
+          <span id="data-root" class="muted"></span>
+        </div>
+      </aside>
+      <div id="sidebar-resizer" class="resizer" role="separator" aria-orientation="vertical" aria-label="Resize sidebar"></div>
+
+      <section class="content">
+        <div id="tabs" class="tabs" role="tablist"></div>
+        <div id="panes" class="panes">
+          <div class="welcome" id="welcome">
+            <h1>BioStore</h1>
+            <p>A local home for phylogenetic data. Open a file from the library, or drop files here to upload.</p>
+            <ul class="welcome-list">
+              <li><b>Networks</b> (<code>.nwk .newick .tree .trees .net</code>) render as interactive diagrams. Multi-tree files include a summary of clade frequencies.</li>
+              <li><b>Alignments</b> (<code>.nex .fasta .phy</code>) open in an editable grid with live statistics and format conversion.</li>
+              <li><b>Analyses</b> runs PhyNetPy scoring and search against files in the store.</li>
+              <li><b>Jobs</b> keeps every analysis you have run under this display name.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <div id="inspector-resizer" class="resizer is-collapsed" role="separator" aria-orientation="vertical" aria-label="Resize inspector"></div>
+      <aside class="inspector is-collapsed" id="inspector" aria-label="Inspector">
+        <div class="inspector-header">
+          <span id="inspector-title">Inspector</span>
+          <button id="btn-inspector-close" class="icon-btn" type="button" title="Close inspector" aria-label="Close inspector"></button>
+        </div>
+        <div id="inspector-body" class="inspector-body"></div>
+      </aside>
+    </div>
+
+    <footer class="statusbar">
+      <button id="status-activity" class="status-activity" type="button">Ready</button>
+      <span id="status-user" class="status-user"></span>
+    </footer>
+  </div>
+
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+  <div id="modal-root"></div>
+  <div id="command-palette" class="palette hidden" role="dialog" aria-modal="true" aria-label="Commands">
+    <input id="palette-input" type="text" placeholder="Type a command or file name" aria-label="Command" />
+    <div id="palette-list" class="palette-list" role="listbox"></div>
+  </div>
+
+  <script src="js/api.js" defer></script>
+  <script src="js/icons.js" defer></script>
+  <script src="js/util.js" defer></script>
+  <script src="js/filetree.js" defer></script>
+  <script src="js/network.js" defer></script>
+  <script src="js/summary.js" defer></script>
+  <script src="js/alignment.js" defer></script>
+  <script src="js/editor.js" defer></script>
+  <script src="js/phynetpy.js" defer></script>
+  <script src="js/jobs.js" defer></script>
+  <script src="js/app.js" defer></script>
+</body>
+</html>

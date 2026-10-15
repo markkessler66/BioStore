@@ -1,0 +1,24 @@
+# BioStore's whole point is to keep data OUT of git.
+biostore_data/
+*.sqlite3
+.biostore_meta.sqlite3
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+
+# Desktop shell (Tauri)
+desktop/node_modules/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

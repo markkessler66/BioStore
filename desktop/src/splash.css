@@ -1,0 +1,50 @@
+html, body {
+  margin: 0;
+  height: 100%;
+  background: #1c1c1e;
+  color: #f5f5f7;
+  font-family: "Segoe UI", system-ui, sans-serif;
+}
+
+body {
+  display: grid;
+  place-items: center;
+}
+
+main {
+  width: min(40rem, calc(100% - 3rem));
+  text-align: center;
+}
+
+h1 {
+  margin: 0 0 0.4rem;
+  font-size: 1.8rem;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+
+#status {
+  margin: 0;
+  color: #d1d1d6;
+}
+
+#error {
+  margin: 1.25rem 0 0;
+  padding: 0.9rem 1rem;
+  max-height: 50vh;
+  overflow: auto;
+  text-align: left;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: #2c2c2e;
+  border-radius: 10px;
+  color: #f5f5f7;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  user-select: text;
+}
+
+#error[hidden] {
+  display: none;
+}

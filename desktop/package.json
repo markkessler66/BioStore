@@ -1,0 +1,13 @@
+{
+  "name": "biostore-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "BioStore desktop shell",
+  "scripts": {
+    "dev": "node scripts/splash-server.mjs",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

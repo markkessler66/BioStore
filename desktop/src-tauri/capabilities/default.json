@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "Splash page only. The BioStore UI is loaded from 127.0.0.1 and is not granted IPC.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
