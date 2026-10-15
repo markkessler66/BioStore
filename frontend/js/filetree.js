@@ -134,9 +134,15 @@ const FileTree = (() => {
     return wrap;
   }
 
-  // Trigger a file picker that uploads into a specific folder.
-  function uploadInto(dir) {
-    const picker = UI.el("input", { type: "file", multiple: "true", style: "display:none" });
+  // Trigger a picker that uploads into a specific folder. With `folder`,
+  // it's a directory picker (webkitdirectory) so the tree is preserved.
+  function uploadInto(dir, { folder = false } = {}) {
+    const picker = UI.el("input", {
+      type: "file",
+      multiple: "true",
+      style: "display:none",
+      webkitdirectory: folder ? "true" : null,
+    });
     document.body.appendChild(picker);
     picker.addEventListener("change", async () => {
       const files = Array.from(picker.files || []).map((f) => ({
@@ -166,7 +172,8 @@ const FileTree = (() => {
       { label: "Open", fn: () => onOpen(node), show: !isDir },
       { label: "New file here…", fn: () => App.newFile(node.path), show: isDir },
       { label: "New subfolder…", fn: () => App.newFolderIn(node.path), show: isDir },
-      { label: "Upload here…", fn: () => uploadInto(node.path), show: isDir },
+      { label: "Upload files here…", fn: () => uploadInto(node.path), show: isDir },
+      { label: "Upload folder here…", fn: () => uploadInto(node.path, { folder: true }), show: isDir },
       { label: "Download", fn: () => API.downloadFile(node.path, node.name).catch((e) => UI.toast(e.message, "error")), show: !isDir },
       { label: "Copy PhyNetPy snippet", fn: () => App.showSnippet(node.path), show: !isDir },
       { label: "Rename / move", fn: () => renameNode(node), show: true },

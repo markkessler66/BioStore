@@ -120,44 +120,77 @@ const API = (() => {
     phynetpyRun: (body) => req("POST", "/api/phynetpy/run", body),
     // items: array of File objects OR { file, relpath } records.
     // Uploads in chunks so large folders don't blow past request size limits.
+    //
+    // Each file is read into memory and sent as a plain Blob rather than as
+    // the File object itself. Safari 26.5.2+ sends an EMPTY body (multipart
+    // Content-Type, Content-Length: 0) whenever it can't hand the network
+    // layer a path-backed File at send time: straight away for files that
+    // came from a drop, and after ~2,000 files for picked ones. The server
+    // then reports "No file part". Memory-backed Blobs need no hand-off.
+    // Chunks are capped by bytes as well as count so what's buffered at any
+    // moment stays small. A file that can't be read is skipped and reported
+    // in `skipped` instead of sinking the whole upload.
     upload: async (dir, items, { onProgress } = {}) => {
-      const list = Array.from(items || []).map((it) =>
-        it.file ? it : { file: it, relpath: it.webkitRelativePath || it.name }
-      );
-      if (!list.length) return { uploaded: [] };
-      const CHUNK = 40;
+      const list = Array.from(items || [])
+        .map((it) => (it.file ? it : { file: it, relpath: it.webkitRelativePath || it.name }))
+        .filter((it) => it.file instanceof Blob);
+      if (!list.length) return { uploaded: [], skipped: [] };
+      const CHUNK_FILES = 40;
+      const CHUNK_BYTES = 64 * 1024 * 1024;
       const uploaded = [];
-      for (let i = 0; i < list.length; i += CHUNK) {
-        const slice = list.slice(i, i + CHUNK);
+      const skipped = [];
+      let i = 0;
+      while (i < list.length) {
+        // Up to CHUNK_FILES files, fewer once CHUNK_BYTES would be exceeded;
+        // always at least one so a single oversized file still goes.
+        const slice = [];
+        let bytes = 0;
+        while (
+          i < list.length && slice.length < CHUNK_FILES &&
+          (!slice.length || bytes + list[i].file.size <= CHUNK_BYTES)
+        ) {
+          slice.push(list[i]);
+          bytes += list[i].file.size;
+          i += 1;
+        }
+        const reads = await Promise.all(
+          slice.map((it) => it.file.arrayBuffer().then((buf) => ({ buf }), (err) => ({ err })))
+        );
         const fd = new FormData();
         fd.append("path", dir || "");
         let appended = 0;
-        for (const it of slice) {
-          const file = it.file || it;
-          if (!(file instanceof Blob)) continue;
+        slice.forEach((it, k) => {
+          const file = it.file;
           const rel = String(it.relpath || file.webkitRelativePath || file.name || "")
             .replace(/\\/g, "/");
+          if (!reads[k].buf) {
+            const err = reads[k].err;
+            skipped.push({ path: rel, error: err && err.name ? `${err.name}: ${err.message}` : String(err) });
+            return;
+          }
           const base = rel.split("/").filter(Boolean).pop() || file.name || "upload.bin";
-          fd.append("file", file, base);
+          const blob = new Blob([reads[k].buf], { type: file.type || "application/octet-stream" });
+          fd.append("file", blob, base);
           fd.append("relpath", rel);
           appended += 1;
+        });
+        if (appended) {
+          const headers = {};
+          const token = getToken();
+          if (token) headers["Authorization"] = "Bearer " + token;
+          const res = await fetch("/api/upload", { method: "POST", body: fd, headers });
+          let data;
+          try { data = await res.json(); } catch { data = {}; }
+          if (!res.ok) {
+            throw new ApiError(data.error || `Upload failed (HTTP ${res.status})`, {
+              status: res.status, data,
+            });
+          }
+          uploaded.push(...(data.uploaded || []));
         }
-        if (!appended) continue;
-        const headers = {};
-        const token = getToken();
-        if (token) headers["Authorization"] = "Bearer " + token;
-        const res = await fetch("/api/upload", { method: "POST", body: fd, headers });
-        let data;
-        try { data = await res.json(); } catch { data = {}; }
-        if (!res.ok) {
-          throw new ApiError(data.error || `Upload failed (HTTP ${res.status})`, {
-            status: res.status, data,
-          });
-        }
-        uploaded.push(...(data.uploaded || []));
-        if (onProgress) onProgress(Math.min(list.length, i + slice.length), list.length);
+        if (onProgress) onProgress(Math.min(list.length, i), list.length);
       }
-      return { uploaded };
+      return { uploaded, skipped };
     },
     downloadUrl: (path) => {
       // Downloads need the token; use a fetch-based helper instead of location=.

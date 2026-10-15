@@ -90,8 +90,19 @@ const App = (() => {
     setupChrome();
 
     document.getElementById("btn-refresh").addEventListener("click", () => FileTree.refresh());
-    document.getElementById("btn-upload").addEventListener("click", () =>
-      document.getElementById("file-input").click());
+    // A plain <input type=file> can't select folders, so Upload offers both
+    // pickers; the folder one carries webkitdirectory.
+    document.getElementById("btn-upload").addEventListener("click", (e) => {
+      const r = e.currentTarget.getBoundingClientRect();
+      UI.contextMenu(
+        [
+          { label: "Upload files…", fn: () => document.getElementById("file-input").click() },
+          { label: "Upload folder…", fn: () => document.getElementById("folder-input").click() },
+        ],
+        r.left,
+        r.bottom + 4
+      );
+    });
     document.getElementById("file-input").addEventListener("change", async (e) => {
       const files = snapshotInputFiles(e.target);
       try {
@@ -1015,7 +1026,9 @@ const App = (() => {
     }));
   }
 
-  async function uploadFiles(dir, items) {
+  // `skipped` is how many dropped entries the browser refused to read; the
+  // upload still goes ahead, the final toast just says so.
+  async function uploadFiles(dir, items, { skipped = 0 } = {}) {
     const list = Array.from(items || []).map((it) =>
       it.file ? it : { file: it, relpath: it.name });
     if (!list.length) return;
@@ -1033,51 +1046,132 @@ const App = (() => {
         },
       });
       const n = (res.uploaded || []).length;
-      UI.toast(`Uploaded ${n} file(s)` + (dir ? ` to ${dir}/` : ""), "success");
+      // Files the browser refused to read: counted by the drop walker, or by
+      // API.upload when reading their bytes failed.
+      const unreadable = (res.skipped || []).length + skipped;
+      if (res.skipped && res.skipped.length) {
+        console.warn("BioStore: skipped unreadable files", res.skipped);
+        showSkipped("Some files could not be read", res.skipped);
+      }
+      UI.toast(
+        `Uploaded ${n} file(s)` + (dir ? ` to ${dir}/` : "") +
+          (unreadable ? ` — ${unreadable} unreadable file(s) skipped` : ""),
+        unreadable ? "" : "success"
+      );
       FileTree.refresh();
     } catch (e) {
       UI.toast(e.message || "Upload failed", "error");
     }
   }
 
-  // Recursively read a dropped file/folder entry into {file, relpath} records.
-  // DirectoryEntry.readEntries() returns batches of ≤100; we must keep calling
-  // until an empty batch arrives, otherwise large folders silently truncate.
-  function readEntry(entry, prefix, out) {
+  // List what the browser refused to read, with its reason, so the user can
+  // see it without opening the dev console. A failed folder loses its whole
+  // subtree, which is why one entry can stand for many missing files.
+  function showSkipped(title, entries, note = "") {
+    const MAX = 15;
+    const rows = entries.slice(0, MAX).map((e) =>
+      UI.el("div", { style: "font-family:monospace;font-size:12px;margin:2px 0;word-break:break-all" }, [
+        UI.el("span", { text: e.path }),
+        UI.el("span", { class: "muted", text: "  —  " + e.error }),
+      ])
+    );
+    if (entries.length > MAX) {
+      rows.push(UI.el("div", { class: "muted", text: `…and ${entries.length - MAX} more (full list in the browser console)` }));
+    }
+    UI.modal(title,
+      UI.el("div", {}, [
+        note ? UI.el("p", { class: "muted", text: note }) : null,
+        entries.length
+          ? UI.el("p", { class: "muted", text: `${entries.length} item(s) skipped. A skipped folder means everything inside it was skipped too.` })
+          : null,
+        ...rows,
+      ]),
+      [{ label: "OK", primary: true, onClick: (c) => c() }]
+    );
+  }
+
+  // ---- dropped-folder walker (kept DOM-free so it can be unit tested) ----
+  // Reads dropped file/folder entries into {file, relpath} records.
+  // Two things matter once a drop holds tens of thousands of files:
+  //  - DirectoryEntry.readEntries() returns batches of ≤100; keep calling
+  //    until an empty batch arrives, otherwise large folders silently truncate.
+  //  - FileEntry.file() must not be issued for every file at once. The old
+  //    Promise.all walk did exactly that, and WebKit starts refusing handles
+  //    under that load; one refusal then sank the whole drop. Reads now go
+  //    through a small pool, and a file that still fails is skipped and
+  //    reported instead of aborting everything.
+  const READ_POOL_SIZE = 8;
+
+  function entryFile(entry) {
+    return new Promise((resolve, reject) =>
+      entry.file(resolve, (err) => reject(err || new Error("Failed to read file " + entry.name)))
+    );
+  }
+
+  function readAllEntries(entry) {
+    const reader = entry.createReader();
     return new Promise((resolve, reject) => {
-      if (!entry) return resolve();
-      if (entry.isFile) {
-        entry.file(
-          (file) => { out.push({ file, relpath: prefix + file.name }); resolve(); },
-          (err) => reject(err || new Error("Failed to read file " + entry.name))
+      const all = [];
+      const next = () =>
+        reader.readEntries(
+          (batch) => {
+            if (!batch.length) return resolve(all);
+            all.push(...batch);
+            next();
+          },
+          (err) => reject(err || new Error("Failed to read folder " + entry.name))
         );
-      } else if (entry.isDirectory) {
-        const reader = entry.createReader();
-        const all = [];
-        const readBatch = () => {
-          reader.readEntries(
-            async (entries) => {
-              if (!entries.length) {
-                try {
-                  await Promise.all(
-                    all.map((e) => readEntry(e, prefix + entry.name + "/", out))
-                  );
-                  resolve();
-                } catch (err) {
-                  reject(err);
-                }
-                return;
-              }
-              all.push(...entries);
-              readBatch();
-            },
-            (err) => reject(err || new Error("Failed to read folder " + entry.name))
-          );
-        };
-        readBatch();
-      } else {
-        resolve();
-      }
+      next();
+    });
+  }
+
+  // Resolves to { items, failed } once every entry has been visited.
+  // `onProgress(count)` fires as files are read so the UI can show activity.
+  function walkEntries(roots, { onProgress } = {}) {
+    return new Promise((resolve) => {
+      const items = [];
+      const failed = [];
+      const stats = { dirs: 0, emptyDirs: 0 };
+      const queue = roots.filter(Boolean).map((entry) => ({ entry, prefix: "" }));
+      let active = 0;
+
+      const visit = async ({ entry, prefix }) => {
+        try {
+          if (entry.isFile) {
+            const file = await entryFile(entry);
+            items.push({ file, relpath: prefix + entry.name });
+            if (onProgress && items.length % 500 === 0) onProgress(items.length);
+          } else if (entry.isDirectory) {
+            stats.dirs += 1;
+            let children = await readAllEntries(entry);
+            // An empty listing is either a genuinely empty folder or a browser
+            // that quietly declined to open it: WebKit answers a directory it
+            // can't read with an empty list, not an error. Give it two more
+            // chances before taking its word for it.
+            for (let attempt = 0; !children.length && attempt < 2; attempt += 1) {
+              await new Promise((r) => setTimeout(r, 150));
+              children = await readAllEntries(entry);
+            }
+            if (!children.length) stats.emptyDirs += 1;
+            const childPrefix = prefix + entry.name + "/";
+            for (const child of children) queue.push({ entry: child, prefix: childPrefix });
+          }
+        } catch (err) {
+          failed.push({ path: prefix + entry.name, error: err });
+        }
+      };
+
+      // Keep up to READ_POOL_SIZE reads in flight. A worker that finishes
+      // re-pumps, so directories discovered late still get picked up; we're
+      // done only when the queue is empty *and* nothing is still running.
+      const pump = () => {
+        while (active < READ_POOL_SIZE && queue.length) {
+          active += 1;
+          visit(queue.shift()).then(() => { active -= 1; pump(); });
+        }
+        if (!active && !queue.length) resolve({ items, failed, stats });
+      };
+      pump();
     });
   }
 
@@ -1096,11 +1190,18 @@ const App = (() => {
         if (en) entries.push(en);
       }
     }
-    const out = [];
+    let out = [];
+    let failed = [];
+    let stats = null;
     try {
       if (entries.length) {
         UI.toast("Reading dropped folder…", "");
-        await Promise.all(entries.map((en) => readEntry(en, "", out)));
+        const res = await walkEntries(entries, {
+          onProgress: (n) => UI.toast(`Reading dropped folder… ${n} files`, ""),
+        });
+        out = res.items;
+        failed = res.failed;
+        stats = res.stats;
       } else {
         for (const f of dt.files) {
           out.push({
@@ -1113,11 +1214,28 @@ const App = (() => {
       UI.toast("Could not read drop: " + (err.message || err), "error");
       return;
     }
+    if (stats) console.info("BioStore: drop read", stats);
+    const emptyNote = stats && stats.emptyDirs
+      ? `${stats.emptyDirs} of ${stats.dirs} folder(s) came back with no entries — either empty, or the browser declined to list them. ` +
+        "If files are missing, pick the folder with Upload → Upload folder… instead; that route doesn't depend on the browser reading dropped folders."
+      : "";
+    if (failed.length || emptyNote) {
+      if (failed.length) console.warn("BioStore: skipped unreadable dropped entries", failed);
+      showSkipped("Some dropped items could not be read", failed.map((f) => ({
+        path: f.path,
+        error: f.error && f.error.name ? `${f.error.name}: ${f.error.message}` : String(f.error),
+      })), emptyNote);
+    }
     if (!out.length) {
-      UI.toast("Nothing to upload (empty folder, or browser blocked folder access)", "error");
+      UI.toast(
+        failed.length
+          ? `Could not read any of the dropped files (${failed.length} unreadable)`
+          : "Nothing to upload (empty folder, or browser blocked folder access)",
+        "error"
+      );
       return;
     }
-    uploadFiles(dir, out);
+    uploadFiles(dir, out, { skipped: failed.length });
   }
 
   function isExternalFileDrag(e) {
